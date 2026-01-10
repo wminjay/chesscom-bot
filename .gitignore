@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Chrome user data (contains login session)
+.chrome-data/
+
+# Build output
+dist/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
