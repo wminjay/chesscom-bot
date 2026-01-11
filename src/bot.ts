@@ -72,6 +72,7 @@ async function main() {
 
     let lastFen = '';
     let moveCount = 0;
+    let consecutiveErrors = 0;
 
     // 游戏主循环
     while (true) {
@@ -103,24 +104,59 @@ async function main() {
                 continue;
             }
 
-            lastFen = state.fen;
+            // 🔑 关键修复：检测到轮到我且局面变化时，先等待让DOM稳定
+            const waitTime = Math.floor(Math.random() * 4000) + 1000; // 1-5秒
+            console.log(`\n⏳ 等待局面稳定... (${(waitTime / 1000).toFixed(1)}s)`);
+            await new Promise(r => setTimeout(r, waitTime));
+
+            // 重新读取棋盘状态（等待后获取最新数据）
+            const freshState = await getBoardState(page);
+            if (!freshState || !freshState.isMyTurn) {
+                console.log('   ⚠️ 状态已变化，跳过本次');
+                continue;
+            }
+
+            lastFen = freshState.fen;
             moveCount++;
 
-            console.log(`\n🎯 回合 ${moveCount} - 轮到我们走棋`);
-            console.log(`   颜色: ${state.playerColor === 'white' ? '⬜ 白方' : '⬛ 黑方'}`);
-            console.log(`   FEN: ${state.fen}`);
+            console.log(`🎯 回合 ${moveCount} - 轮到我们走棋`);
+            console.log(`   颜色: ${freshState.playerColor === 'white' ? '⬜ 白方' : '⬛ 黑方'}`);
+            console.log(`   FEN: ${freshState.fen}`);
 
             // 获取最佳走法 (带重试)
             try {
-                const bestMove = await engine.getBestMoveWithRetry(state.fen, THINK_TIME);
+                const bestMove = await engine.getBestMoveWithRetry(freshState.fen, THINK_TIME);
                 console.log(`   最佳走法: ${bestMove}`);
 
                 // 执行走棋
-                await makeMove(page, bestMove, state.playerColor);
+                await makeMove(page, bestMove, freshState.playerColor);
                 console.log('   ✅ 走棋完成!');
+                consecutiveErrors = 0;
+
             } catch (engineError) {
-                console.error('   ❌ 引擎错误，跳过本回合');
-                lastFen = ''; // 重置以便下次重试
+                consecutiveErrors++;
+                if (consecutiveErrors >= 5) {
+                    console.error('   🚨 连续错误过多，停止运行 (可能是游戏结束)');
+                    break;
+                }
+                console.error('   ❌ 引擎错误(可能是非法局面的非法FEN导致)，等待局面稳定...');
+
+                // 给页面一点时间更新 DOM，避免连续读取非法 FEN
+                await new Promise(r => setTimeout(r, 2000));
+
+                // 如果引擎崩溃，尝试重启
+                console.log('   🔄 尝试重启引擎...');
+                try {
+                    engine.quit(); // 确保旧进程结束
+                } catch { }
+                try {
+                    await engine.init();
+                    console.log('   ✅ 引擎重启成功');
+                } catch (e) {
+                    console.error('   ❌ 引擎重启失败:', e);
+                }
+
+                lastFen = ''; // 重置以便下次重试（读取新的 FEN）
             }
 
         } catch (error) {

@@ -21,7 +21,7 @@ export async function getBoardState(page: Page): Promise<BoardState | null> {
                 'button.bot-selection-cta-button-button, [data-cy="bot-selection-cta-button"], button[data-cy="new-game-index-play"]'
             );
             const resignButton = document.querySelector('[data-cy="resign"], .resign-button-component');
-            const gameOverModal = document.querySelector('.game-over-modal, .game-result-header');
+            const gameOverModal = document.querySelector('.game-over-modal, .game-result-header, .game-result-component, [data-cy="game-over-modal"], .board-modal-container');
 
             // 如果有 Play 按钮（未开始游戏）或有游戏结束弹窗，不走棋
             if (playButton || gameOverModal) {
@@ -104,7 +104,7 @@ export async function getBoardState(page: Page): Promise<BoardState | null> {
         if (!state) return null;
 
         // 转换为 FEN
-        const fen = boardToFEN(state.boardArray, state.playerColor);
+        const fen = boardToFEN(state.boardArray, state.playerColor, state.isMyTurn);
 
         return {
             fen,
@@ -117,7 +117,7 @@ export async function getBoardState(page: Page): Promise<BoardState | null> {
     }
 }
 
-function boardToFEN(board: (string | null)[][], playerColor: string): string {
+function boardToFEN(board: (string | null)[][], playerColor: string, isMyTurn: boolean): string {
     let fen = '';
 
     for (let rank = 0; rank < 8; rank++) {
@@ -142,9 +142,29 @@ function boardToFEN(board: (string | null)[][], playerColor: string): string {
         }
     }
 
-    // 简化: 假设基本的 FEN 信息
-    const turn = playerColor === 'white' ? 'w' : 'b';
-    fen += ` ${turn} KQkq - 0 1`;
+    // 计算回合方
+    const turnColor = isMyTurn ? playerColor : (playerColor === 'white' ? 'black' : 'white');
+    const turn = turnColor === 'white' ? 'w' : 'b';
+
+    // 计算易位权限 (简单的位置检测)
+    // 注意: board[0] 是 Rank 8 (黑), board[7] 是 Rank 1 (白)
+    let castling = '';
+
+    // White: King at e1 (7,4), Rooks at h1 (7,7) and a1 (7,0)
+    if (board[7][4] === 'wk') {
+        if (board[7][7] === 'wr') castling += 'K';
+        if (board[7][0] === 'wr') castling += 'Q';
+    }
+
+    // Black: King at e8 (0,4), Rooks at h8 (0,7) and a8 (0,0)
+    if (board[0][4] === 'bk') {
+        if (board[0][7] === 'br') castling += 'k';
+        if (board[0][0] === 'br') castling += 'q';
+    }
+
+    if (castling === '') castling = '-';
+
+    fen += ` ${turn} ${castling} - 0 1`;
 
     return fen;
 }

@@ -4,6 +4,7 @@ import { EventEmitter } from 'events';
 export class StockfishEngine extends EventEmitter {
     private process: ChildProcess | null = null;
     private isReady: boolean = false;
+    private buffer: string = '';
 
     constructor() {
         super();
@@ -11,9 +12,11 @@ export class StockfishEngine extends EventEmitter {
 
     async init(): Promise<void> {
         return new Promise((resolve, reject) => {
-            // 使用系统安装的 stockfish
+            // 使用系统安装的 stockfish (brew install stockfish)
+            console.log(`   使用引擎: stockfish`);
+
             this.process = spawn('stockfish', [], {
-                stdio: ['pipe', 'pipe', 'pipe']
+                stdio: ['pipe', 'pipe', 'pipe'],
             });
 
             if (!this.process.stdout || !this.process.stdin) {
@@ -21,21 +24,22 @@ export class StockfishEngine extends EventEmitter {
                 return;
             }
 
-            let buffer = '';
+            this.buffer = '';
 
             this.process.stdout.on('data', (data: Buffer) => {
-                buffer += data.toString();
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
+                this.buffer += data.toString();
+                const lines = this.buffer.split('\n');
+                this.buffer = lines.pop() || '';
 
                 for (const line of lines) {
-                    // console.log('Engine:', line);
-
                     if (line === 'uciok') {
                         this.send('isready');
                     } else if (line === 'readyok') {
                         this.isReady = true;
-                        resolve();
+                        if (!this.listenerCount('ready')) {
+                            resolve();
+                        }
+                        this.emit('ready');
                     } else if (line.startsWith('bestmove')) {
                         const match = line.match(/bestmove\s+(\S+)/);
                         if (match) {
@@ -46,11 +50,17 @@ export class StockfishEngine extends EventEmitter {
             });
 
             this.process.stderr?.on('data', (data: Buffer) => {
-                // 忽略 stderr
+                console.error(`[Engine Error] ${data}`);
             });
 
             this.process.on('error', (err) => {
+                console.error('Stockfish error:', err);
                 reject(err);
+            });
+
+            this.process.on('exit', (code, signal) => {
+                console.error(`⚠️ Stockfish 进程退出，code: ${code}, signal: ${signal}`);
+                this.isReady = false;
             });
 
             // 发送 UCI 初始化命令
@@ -59,7 +69,7 @@ export class StockfishEngine extends EventEmitter {
     }
 
     private send(command: string): void {
-        if (this.process?.stdin) {
+        if (this.process?.stdin && !this.process.killed) {
             this.process.stdin.write(command + '\n');
         }
     }
@@ -69,17 +79,23 @@ export class StockfishEngine extends EventEmitter {
         this.send(`setoption name Skill Level value ${Math.min(20, Math.max(0, level))}`);
     }
 
-    // 获取最佳走法 (带超时保护)
+    // 获取最佳走法 (简化版本，更可靠)
     async getBestMove(fen: string, thinkTime: number = 1000): Promise<string> {
         return new Promise((resolve, reject) => {
+            // 检查进程是否存活
+            if (!this.process || this.process.killed) {
+                reject(new Error('Engine process not running'));
+                return;
+            }
+
             const timeout = setTimeout(() => {
                 this.removeListener('bestmove', handler);
-                console.error('⚠️ 引擎超时，重新发送命令...');
-                // 超时后尝试停止当前计算并重新请求
                 this.send('stop');
-                // 返回一个默认走法或拒绝
-                reject(new Error('Engine timeout'));
-            }, thinkTime + 5000); // 给额外5秒缓冲
+                // 再等一小会儿看能不能收到 bestmove
+                setTimeout(() => {
+                    reject(new Error('Engine timeout'));
+                }, 500);
+            }, thinkTime + 3000);
 
             const handler = (move: string) => {
                 clearTimeout(timeout);
@@ -94,13 +110,17 @@ export class StockfishEngine extends EventEmitter {
     }
 
     // 带重试的获取最佳走法
-    async getBestMoveWithRetry(fen: string, thinkTime: number = 1000, retries: number = 3): Promise<string> {
+    async getBestMoveWithRetry(fen: string, thinkTime: number = 1000, retries: number = 2): Promise<string> {
         for (let i = 0; i < retries; i++) {
             try {
                 return await this.getBestMove(fen, thinkTime);
             } catch (e) {
-                console.log(`   重试 ${i + 1}/${retries}...`);
-                if (i === retries - 1) throw e;
+                if (i < retries - 1) {
+                    console.log(`   重试 ${i + 1}/${retries}...`);
+                    await new Promise(r => setTimeout(r, 300));
+                } else {
+                    throw e;
+                }
             }
         }
         throw new Error('Failed after retries');
